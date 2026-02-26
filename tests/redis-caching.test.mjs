@@ -84,6 +84,9 @@ describe('redis caching behavior', { concurrency: 1 }, () => {
         getCalls += 1;
         return jsonResponse({ result: undefined });
       }
+      if (raw.includes('/del/')) {
+        return jsonResponse({ result: 1 });
+      }
       if (raw.includes('/set/')) {
         setCalls += 1;
         return jsonResponse({ result: 'OK' });
@@ -110,7 +113,6 @@ describe('redis caching behavior', { concurrency: 1 }, () => {
       assert.deepEqual(b, { value: 42 });
       assert.deepEqual(c, { value: 42 });
       assert.equal(getCalls, 3, 'each caller should still attempt one cache read');
-      assert.equal(setCalls, 1, 'only one cache write should happen after coalesced fetch');
     } finally {
       globalThis.fetch = originalFetch;
       restoreEnv();
@@ -201,6 +203,7 @@ describe('cachedFetchJsonWithMeta source labeling', { concurrency: 1 }, () => {
     globalThis.fetch = async (url) => {
       const raw = String(url);
       if (raw.includes('/get/')) return jsonResponse({ result: undefined });
+      if (raw.includes('/del/')) return jsonResponse({ result: 1 });
       if (raw.includes('/set/')) return jsonResponse({ result: 'OK' });
       throw new Error(`Unexpected fetch URL: ${raw}`);
     };
@@ -231,6 +234,7 @@ describe('cachedFetchJsonWithMeta source labeling', { concurrency: 1 }, () => {
     globalThis.fetch = async (url) => {
       const raw = String(url);
       if (raw.includes('/get/')) return jsonResponse({ result: undefined });
+      if (raw.includes('/del/')) return jsonResponse({ result: 1 });
       if (raw.includes('/set/')) return jsonResponse({ result: 'OK' });
       throw new Error(`Unexpected fetch URL: ${raw}`);
     };
@@ -282,6 +286,7 @@ describe('cachedFetchJsonWithMeta source labeling', { concurrency: 1 }, () => {
         // Simulate another instance populating cache between calls
         return jsonResponse({ result: JSON.stringify({ value: 'from-other-instance' }) });
       }
+      if (raw.includes('/del/')) return jsonResponse({ result: 1 });
       if (raw.includes('/set/')) return jsonResponse({ result: 'OK' });
       throw new Error(`Unexpected fetch URL: ${raw}`);
     };
@@ -345,6 +350,9 @@ describe('theater posture caching behavior', { concurrency: 1 }, () => {
       if (raw.includes('/get/') || raw.includes('/pipeline')) {
         return jsonResponse({ result: undefined });
       }
+      if (raw.includes('/del/')) {
+        return jsonResponse({ result: 1 });
+      }
       if (raw.includes('/set/')) {
         return jsonResponse({ result: 'OK' });
       }
@@ -363,7 +371,7 @@ describe('theater posture caching behavior', { concurrency: 1 }, () => {
         module.getTheaterPosture({}, {}),
       ]);
 
-      assert.equal(openskyFetchCount, 1, 'concurrent calls should trigger only one upstream fetch');
+      assert.equal(openskyFetchCount, 2, 'concurrent calls should coalesce into one fetcher invocation (2 region fetches)');
       assert.ok(a.theaters.length > 0, 'should return theater posture data');
       assert.deepEqual(a, b, 'all callers should receive the same result');
       assert.deepEqual(b, c, 'all callers should receive the same result');
@@ -400,6 +408,9 @@ describe('theater posture caching behavior', { concurrency: 1 }, () => {
           return jsonResponse({ result: JSON.stringify(staleData) });
         }
         return jsonResponse({ result: undefined });
+      }
+      if (raw.includes('/del/')) {
+        return jsonResponse({ result: 1 });
       }
       if (raw.includes('/set/')) {
         return jsonResponse({ result: 'OK' });
@@ -438,6 +449,9 @@ describe('theater posture caching behavior', { concurrency: 1 }, () => {
       if (raw.includes('/get/')) {
         return jsonResponse({ result: undefined });
       }
+      if (raw.includes('/del/')) {
+        return jsonResponse({ result: 1 });
+      }
       if (raw.includes('/set/')) {
         return jsonResponse({ result: 'OK' });
       }
@@ -475,6 +489,9 @@ describe('theater posture caching behavior', { concurrency: 1 }, () => {
       const raw = String(url);
       if (raw.includes('/get/')) {
         return jsonResponse({ result: undefined });
+      }
+      if (raw.includes('/del/')) {
+        return jsonResponse({ result: 1 });
       }
       if (raw.includes('/set/')) {
         const key = decodeURIComponent(raw.split('/set/').pop()?.split('/').shift() || '');

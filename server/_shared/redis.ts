@@ -90,9 +90,88 @@ export async function getCachedJsonBatch(keys: string[]): Promise<Map<string, un
  */
 const inflight = new Map<string, Promise<unknown>>();
 
+// ---------------------------------------------------------------------------
+// Distributed lock — prevents cross-instance cache stampede
+// ---------------------------------------------------------------------------
+
+const LOCK_TTL = 15; // seconds — must exceed worst-case upstream fetch duration
+const LOCK_POLL_INTERVAL_MS = 250;
+const LOCK_POLL_MAX_ATTEMPTS = 6; // 6 × 250ms = 1.5s max wait
+
+async function acquireLock(lockKey: string): Promise<boolean> {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return false;
+  try {
+    const resp = await fetch(
+      `${url}/set/${encodeURIComponent(prefixKey(lockKey))}/1/NX/EX/${LOCK_TTL}`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(3_000),
+      },
+    );
+    if (!resp.ok) return false;
+    const data = (await resp.json()) as { result: 'OK' | null };
+    return data.result === 'OK';
+  } catch {
+    return false;
+  }
+}
+
+async function releaseLock(lockKey: string): Promise<void> {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return;
+  try {
+    await fetch(`${url}/del/${encodeURIComponent(prefixKey(lockKey))}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(3_000),
+    });
+  } catch { /* best-effort */ }
+}
+
+/**
+ * On cache miss, try to acquire a distributed lock so only one instance
+ * fetches upstream. Losers poll Redis for the winner's result.
+ * Falls open (proceeds with fetch) when Redis is unavailable.
+ */
+async function fetchWithLock<T>(
+  key: string,
+  ttlSeconds: number,
+  fetcher: () => Promise<T>,
+): Promise<T | null> {
+  const lockKey = `lock:${key}`;
+  const acquired = await acquireLock(lockKey);
+
+  if (!acquired) {
+    // Another instance is fetching — poll for its result
+    for (let i = 0; i < LOCK_POLL_MAX_ATTEMPTS; i++) {
+      await new Promise<void>((r) => setTimeout(r, LOCK_POLL_INTERVAL_MS));
+      const filled = await getCachedJson(key);
+      if (filled !== null) return filled as T;
+    }
+    // No Redis or winner didn't finish — fall open
+    return fetcher();
+  }
+
+  // We are the leader — fetch, cache, release
+  try {
+    const result = await fetcher();
+    if (result != null) {
+      await setCachedJson(key, result, ttlSeconds);
+    }
+    return result;
+  } finally {
+    await releaseLock(lockKey);
+  }
+}
+
 /**
  * Check cache, then fetch with coalescing on miss.
- * Concurrent callers for the same key share a single upstream fetch + Redis write.
+ * Uses both in-process coalescing (inflight map) and cross-instance
+ * distributed locking (Redis SET NX) to prevent stampedes.
  */
 export async function cachedFetchJson<T>(
   key: string,
@@ -102,16 +181,11 @@ export async function cachedFetchJson<T>(
   const cached = await getCachedJson(key);
   if (cached !== null) return cached as T;
 
+  // In-process coalescing (same instance)
   const existing = inflight.get(key);
   if (existing) return existing as Promise<T>;
 
-  const promise = fetcher()
-    .then(async (result) => {
-      if (result != null) {
-        await setCachedJson(key, result, ttlSeconds);
-      }
-      return result;
-    })
+  const promise = fetchWithLock(key, ttlSeconds, fetcher)
     .finally(() => {
       inflight.delete(key);
     });
@@ -143,13 +217,7 @@ export async function cachedFetchJsonWithMeta<T>(
     return { data, source: 'fresh' };
   }
 
-  const promise = fetcher()
-    .then(async (result) => {
-      if (result != null) {
-        await setCachedJson(key, result, ttlSeconds);
-      }
-      return result;
-    })
+  const promise = fetchWithLock(key, ttlSeconds, fetcher)
     .finally(() => {
       inflight.delete(key);
     });
