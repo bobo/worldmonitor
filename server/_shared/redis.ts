@@ -94,7 +94,7 @@ const inflight = new Map<string, Promise<unknown>>();
 // Distributed lock — prevents cross-instance cache stampede
 // ---------------------------------------------------------------------------
 
-const LOCK_TTL = 15; // seconds — must exceed worst-case upstream fetch duration
+const LOCK_TTL = 10;
 const LOCK_POLL_INTERVAL_MS = 250;
 const LOCK_POLL_MAX_ATTEMPTS = 6; // 6 × 250ms = 1.5s max wait
 
