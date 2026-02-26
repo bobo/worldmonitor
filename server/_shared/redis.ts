@@ -142,6 +142,11 @@ async function fetchWithLock<T>(
   ttlSeconds: number,
   fetcher: () => Promise<T>,
 ): Promise<T | null> {
+  // No Redis — can't coordinate, fall open
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return fetcher();
+
   const lockKey = `lock:${key}`;
   const acquired = await acquireLock(lockKey);
 
@@ -152,8 +157,8 @@ async function fetchWithLock<T>(
       const filled = await getCachedJson(key);
       if (filled !== null) return filled as T;
     }
-    // No Redis or winner didn't finish — fall open
-    return fetcher();
+    // Winner didn't finish in time — return null so callers use stale/backup
+    return null;
   }
 
   // We are the leader — fetch, cache, release
